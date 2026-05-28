@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -115,43 +116,81 @@ def make_item(platform, title, url, score, metric, source="", text="", created=N
 
 
 # --- Platform fetchers (all scoped to the last `days` days) ---------------
+_REDDIT_TOKEN: str | None = None
+
+
+def reddit_token() -> str:
+    """App-only OAuth token (client_credentials). Empty string if no creds.
+
+    Reddit blocks unauthenticated JSON from datacenter IPs (403), so OAuth is
+    required on GitHub runners. Needs REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET
+    from a Reddit app (https://www.reddit.com/prefs/apps, type "script").
+    """
+    global _REDDIT_TOKEN
+    if _REDDIT_TOKEN is not None:
+        return _REDDIT_TOKEN
+    cid = os.environ.get("REDDIT_CLIENT_ID")
+    csec = os.environ.get("REDDIT_CLIENT_SECRET")
+    if not cid or not csec:
+        _REDDIT_TOKEN = ""
+        return ""
+    ua = os.environ.get("REDDIT_USER_AGENT", "daily-research:v1.0 (by /u/daily-research-bot)")
+    try:
+        r = requests.post(
+            "https://www.reddit.com/api/v1/access_token",
+            auth=(cid, csec),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": ua}, timeout=TIMEOUT)
+        r.raise_for_status()
+        _REDDIT_TOKEN = r.json().get("access_token", "") or ""
+        log("reddit: OAuth token acquired" if _REDDIT_TOKEN else "reddit: OAuth returned no token")
+    except Exception as e:
+        log(f"reddit oauth token failed: {e}")
+        _REDDIT_TOKEN = ""
+    return _REDDIT_TOKEN
+
+
 def fetch_reddit(cfg, days) -> list[dict]:
     items: list[dict] = []
-    cutoff = time.time() - days * 86400
     tf = "day" if days <= 1 else "week"
+    tok = reddit_token()
+    if tok:
+        base, suffix = "https://oauth.reddit.com", ""
+        ua = os.environ.get("REDDIT_USER_AGENT", "daily-research:v1.0 (by /u/daily-research-bot)")
+        headers = {"Authorization": f"bearer {tok}", "User-Agent": ua}
+    else:
+        base, suffix = "https://www.reddit.com", ".json"
+        headers = None
+        log("reddit: no OAuth creds; falling back to public endpoints (likely 403 on cloud IPs)")
+
+    def collect(children):
+        for c in children:
+            d = c.get("data", {})
+            ups, ncom = d.get("ups", 0), d.get("num_comments", 0)
+            items.append(make_item(
+                "Reddit", d.get("title", ""),
+                "https://www.reddit.com" + d.get("permalink", ""),
+                ups + ncom * 2, f"{ups}赞·{ncom}评论",
+                source=f"r/{d.get('subreddit', '')}", text=d.get("selftext", ""),
+                created=d.get("created_utc")))
+
     for sub in cfg.get("reddit_subs", []):
         try:
-            data = get_json(f"https://www.reddit.com/r/{sub}/top.json",
-                            params={"t": tf, "limit": 20})
-            for c in data.get("data", {}).get("children", []):
-                d = c.get("data", {})
-                ups, ncom = d.get("ups", 0), d.get("num_comments", 0)
-                items.append(make_item(
-                    "Reddit", d.get("title", ""),
-                    "https://www.reddit.com" + d.get("permalink", ""),
-                    ups + ncom * 2, f"{ups}赞·{ncom}评论",
-                    source=f"r/{d.get('subreddit', sub)}", text=d.get("selftext", ""),
-                    created=d.get("created_utc")))
+            data = get_json(f"{base}/r/{sub}/top{suffix}",
+                            params={"t": tf, "limit": 20, "raw_json": 1}, headers=headers)
+            collect(data.get("data", {}).get("children", []))
             time.sleep(0.5)
         except Exception as e:
             log(f"reddit sub r/{sub} failed: {e}")
     for q in cfg.get("queries", []):
         try:
-            data = get_json("https://www.reddit.com/search.json",
-                            params={"q": q, "sort": "top", "t": tf, "limit": 12})
-            for c in data.get("data", {}).get("children", []):
-                d = c.get("data", {})
-                ups, ncom = d.get("ups", 0), d.get("num_comments", 0)
-                items.append(make_item(
-                    "Reddit", d.get("title", ""),
-                    "https://www.reddit.com" + d.get("permalink", ""),
-                    ups + ncom * 2, f"{ups}赞·{ncom}评论",
-                    source=f"r/{d.get('subreddit', '')}", text=d.get("selftext", ""),
-                    created=d.get("created_utc")))
+            data = get_json(f"{base}/search{suffix}",
+                            params={"q": q, "sort": "top", "t": tf, "limit": 12,
+                                    "type": "link", "raw_json": 1}, headers=headers)
+            collect(data.get("data", {}).get("children", []))
             time.sleep(0.5)
         except Exception as e:
             log(f"reddit search '{q}' failed: {e}")
-    _ = cutoff
     return items
 
 

@@ -34,15 +34,19 @@ daily-research/
 - **回退**：若 skill 不可用，自动改用 `scripts/aggregate.py`（同样免 key）。
 
 ## 一次性配置（需要你做）
-在仓库 **Settings → Secrets and variables → Actions** 添加 3 个 secret：
+在仓库 **Settings → Secrets and variables → Actions** 添加以下 secret：
 
-| Secret | 用途 | 获取方式 |
-| --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | 订阅鉴权（计费走订阅，不走 API） | 本机 `claude setup-token`（需 Claude Pro/Max） |
-| `TG_BOT_TOKEN` | Telegram 机器人 token | 找 [@BotFather](https://t.me/BotFather) 建 bot |
-| `TG_CHAT_ID` | 你的会话 ID | 找 [@userinfobot](https://t.me/userinfobot)，或先给 bot 发消息后调 `getUpdates` |
+| Secret | 必填 | 用途 | 获取方式 |
+| --- | --- | --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | 是 | 订阅鉴权（计费走订阅，不走 API） | 本机 `claude setup-token`（需 Claude Pro/Max） |
+| `TG_BOT_TOKEN` | 是 | Telegram 机器人 token | 找 [@BotFather](https://t.me/BotFather) 建 bot |
+| `TG_CHAT_ID` | 是 | 你的会话 ID | 找 [@userinfobot](https://t.me/userinfobot)，或先给 bot 发消息后调 `getUpdates` |
+| `REDDIT_CLIENT_ID` | 推荐 | Reddit OAuth（否则 runner 上 Reddit 被 403） | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → create app → 选 **script** → app 名下那串 id |
+| `REDDIT_CLIENT_SECRET` | 推荐 | 同上 | 同一个 app 的 **secret** 字段 |
 
 > **不要**添加 `ANTHROPIC_API_KEY`——加了工作流会主动失败。
+> 不加 Reddit 两个 secret 也能跑，只是 Reddit 平台为空（内容来自 HN/YouTube/Polymarket）。
+> 建 Reddit app 时类型选 **script**，redirect uri 随便填 `http://localhost:8080` 即可。
 
 ## 先测后跑
 1. 把本分支合并到 `main`（合并后 Actions 页才会出现「Run workflow」按钮）。
