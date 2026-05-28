@@ -3,8 +3,8 @@ name: 研究·自我提升
 # 每周一 09:00 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "0 1 * * 1"   # 01:00 UTC 周一 = 09:00 北京时间 周一
+  schedule:
+    - cron: "0 1 * * 1"   # 01:00 UTC 周一 = 09:00 北京时间 周一
 
 jobs:
   run:
