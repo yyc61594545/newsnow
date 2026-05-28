@@ -1,0 +1,155 @@
+name: research (reusable)
+
+# Reusable engine for the daily research tasks. Called by the per-task
+# workflows (research-*.yml). Does: gather -> rank -> filter -> synthesize a
+# Chinese brief (via Claude Code on subscription OAuth) -> send to Telegram
+# -> commit the brief. No ANTHROPIC_API_KEY is ever used.
+
+on:
+  workflow_call:
+    inputs:
+      task_id:
+        required: true
+        type: string
+      title:
+        required: true
+        type: string
+      platforms:
+        required: true
+        type: string
+      max_items:
+        required: false
+        type: number
+        default: 12
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guard auth (subscription OAuth only, never API key)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is set. Refusing to run to avoid API-rate billing. Remove that secret; this system must use CLAUDE_CODE_OAUTH_TOKEN only."
+            exit 1
+          fi
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is missing. Add it (generate with 'claude setup-token')."
+            exit 1
+          fi
+          echo "Auth OK: subscription OAuth token present, no ANTHROPIC_API_KEY."
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet requests yt-dlp
+
+      - name: Install last30days skill (best-effort)
+        continue-on-error: true
+        run: bash daily-research/scripts/install_skill.sh .claude/skills
+
+      - name: Compute brief path
+        id: meta
+        run: |
+          DATE=$(date +%F)
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "brief_path=daily-research/briefs/${{ inputs.task_id }}/$DATE.md" >> "$GITHUB_OUTPUT"
+          mkdir -p "daily-research/briefs/${{ inputs.task_id }}"
+
+      - name: Research & synthesize brief (Claude Code, OAuth)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            你是「每日多平台调研」自动化任务的执行者。本次任务参数：
+            - 任务ID: ${{ inputs.task_id }}
+            - 任务名称: ${{ inputs.title }}
+            - 目标平台: ${{ inputs.platforms }}
+            - 最多条目: ${{ inputs.max_items }}
+            - 输出文件: ${{ steps.meta.outputs.brief_path }}
+            - 日期: ${{ steps.meta.outputs.date }}
+            - 调研窗口: 最近 30 天，重点最近 7 天
+
+            执行步骤：
+            1. 先完整阅读 daily-research/CLAUDE.md，按上面的任务ID找到主题、平台侧重与特殊要求。
+            2. 采集数据，按优先级：
+               (a) 优先使用 last30days skill（位于 .claude/skills/last30days）调研目标平台；
+               (b) 若该 skill 不存在或运行报错，则运行
+                   `python3 daily-research/scripts/aggregate.py --task ${{ inputs.task_id }} --out /tmp/items.json`
+                   并读取 /tmp/items.json 的 candidates 作为候选。
+            3. 按真实互动热度排序，过滤低质/无关/重复内容（规则见 CLAUDE.md）。本期跳过 X/Twitter。
+            4. 选出最多 ${{ inputs.max_items }} 条，用中文撰写简报，严格按 CLAUDE.md 的格式，
+               写入文件：${{ steps.meta.outputs.brief_path }}
+            5. 只写这个文件，不要 commit、不要开 PR、不要修改其他文件。
+            6. 链接必须真实可点击，绝不可编造链接或数据；某平台无优质结果就注明「本期无高质量结果」。
+          claude_args: |
+            --max-turns 40
+            --allowedTools Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch
+
+      - name: Verify brief was produced
+        run: |
+          BRIEF="${{ steps.meta.outputs.brief_path }}"
+          if [ ! -s "$BRIEF" ]; then
+            echo "::error::Brief file was not produced at $BRIEF"
+            exit 1
+          fi
+          echo "Brief ready: $BRIEF ($(wc -l < "$BRIEF") lines)"
+
+      - name: Send to Telegram (curl, chunked)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          BRIEF="${{ steps.meta.outputs.brief_path }}"
+          rm -f /tmp/chunk_*
+          # split into <=3900-char chunks on line boundaries
+          awk '
+            BEGIN { n=0; buf="" }
+            {
+              if (length(buf) + length($0) + 1 > 3900 && length(buf) > 0) {
+                printf "%s", buf > sprintf("/tmp/chunk_%03d", n); n++; buf=""
+              }
+              buf = buf $0 "\n"
+            }
+            END { if (length(buf) > 0) printf "%s", buf > sprintf("/tmp/chunk_%03d", n) }
+          ' "$BRIEF"
+          for f in $(ls /tmp/chunk_* | sort); do
+            code=$(curl -sS -o /tmp/tg_resp.json -w "%{http_code}" \
+              -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text@${f}" \
+              --data-urlencode "disable_web_page_preview=true")
+            echo "Telegram chunk $(basename "$f") -> HTTP $code"
+            if [ "$code" != "200" ]; then
+              echo "::error::Telegram send failed"; cat /tmp/tg_resp.json; exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Commit brief
+        run: |
+          set -euo pipefail
+          git config user.name "daily-research-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ steps.meta.outputs.brief_path }}"
+          if git diff --cached --quiet; then
+            echo "No brief changes to commit."
+          else
+            git commit -m "brief: ${{ inputs.title }} ${{ steps.meta.outputs.date }}"
+            git push || (git pull --rebase --autostash && git push)
+          fi
