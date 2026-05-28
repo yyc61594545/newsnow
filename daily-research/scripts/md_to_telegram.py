@@ -2,9 +2,10 @@
 """Convert an archive brief (markdown) into a Telegram-friendly HTML message.
 
 Telegram doesn't render Markdown headings/bold the way GitHub does, so dumping
-raw markdown leaks '#', '##', '**' as literal characters. This produces clean
-Telegram HTML: a bold header, and per item a bold clickable title, an italic
-source/metric line, and the plain summary.
+raw markdown leaks '#', '##', '**', '---' as literal characters. This produces
+clean Telegram HTML: a compact header, and per item a bold clickable title, a
+de-emphasized source/metric line (with a per-platform emoji), and a short
+summary.
 
 Usage: md_to_telegram.py <brief.md>   (writes HTML to stdout)
 """
@@ -14,6 +15,17 @@ import html
 import re
 import sys
 
+PLATFORM_EMOJI = {
+    "reddit": "👽",
+    "hacker news": "🟠",
+    "hackernews": "🟠",
+    "youtube": "▶️",
+    "polymarket": "📈",
+}
+
+HR_RE = re.compile(r"^[-*_]{3,}$")
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
 
 def esc(s: str) -> str:
     return html.escape(s, quote=False)
@@ -21,6 +33,25 @@ def esc(s: str) -> str:
 
 def esc_attr(s: str) -> str:
     return html.escape(s, quote=True)
+
+
+def rich(s: str) -> str:
+    """Escape, then turn **bold** into <b>bold</b> and drop stray '*' markers."""
+    s = esc(s)
+    s = BOLD_RE.sub(r"<b>\1</b>", s)
+    return s.replace("**", "")
+
+
+def platform_emoji(metric: str) -> str:
+    first = re.split(r"[·|｜]", metric, 1)[0].strip().lower() if metric else ""
+    for key, emo in PLATFORM_EMOJI.items():
+        if key in first:
+            return emo
+    return "🔹"
+
+
+def is_hr(s: str) -> bool:
+    return bool(HR_RE.match(s.strip()))
 
 
 def main() -> int:
@@ -49,18 +80,18 @@ def main() -> int:
 
     for ln in preamble:
         s = ln.strip()
-        if not s:
+        if not s or is_hr(s):
             continue
         if s.startswith("# "):
-            out.append(f"<b>📊 {esc(s[2:].strip())}</b>")
+            out.append(f"📊 <b>{rich(s[2:].strip())}</b>")
         elif s.startswith(">"):
             c = s.lstrip("> ").strip()
-            if c.startswith("注") or "注：" in c or "注:" in c:
-                out.append(f"⚠️ {esc(c)}")
+            if "注" in c[:3]:
+                out.append(f"⚠️ {rich(c)}")
             else:
-                out.append(f"<i>{esc(c)}</i>")
+                out.append(rich(c))
         else:
-            out.append(esc(s))
+            out.append(rich(s))
     out.append("")
 
     for it in items:
@@ -70,7 +101,7 @@ def main() -> int:
         summary: list[str] = []
         for ln in it[1:]:
             s = ln.strip()
-            if not s:
+            if not s or is_hr(s):
                 continue
             m = re.search(r"原文链接[:：]\s*(\S+)", s)
             if m:
@@ -84,14 +115,16 @@ def main() -> int:
                 continue
             summary.append(s)
 
+        # title is already wrapped in <b>; strip bold markers to avoid nested <b>
+        title_txt = BOLD_RE.sub(r"\1", esc(title)).replace("**", "")
         if url:
-            out.append(f'🔹 <b><a href="{esc_attr(url)}">{esc(title)}</a></b>')
+            out.append(f'<b><a href="{esc_attr(url)}">{title_txt}</a></b>')
         else:
-            out.append(f"🔹 <b>{esc(title)}</b>")
+            out.append(f"<b>{title_txt}</b>")
         if metric:
-            out.append(f"<i>{esc(metric)}</i>")
+            out.append(f"{platform_emoji(metric)} <i>{rich(metric)}</i>")
         if summary:
-            out.append(esc(" ".join(summary)))
+            out.append(rich(" ".join(summary)))
         out.append("")
 
     sys.stdout.write("\n".join(out).rstrip() + "\n")
