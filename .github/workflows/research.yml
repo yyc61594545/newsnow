@@ -82,20 +82,23 @@ jobs:
             - 最多条目: ${{ inputs.max_items }}
             - 输出文件: ${{ steps.meta.outputs.brief_path }}
             - 日期: ${{ steps.meta.outputs.date }}
-            - 调研窗口: 最近 30 天，重点最近 7 天
+            - 调研窗口: 最近 72 小时（最多 7 天），**优先当天与最近 1–2 天的新内容**，丢弃更早的旧条目
 
             执行步骤：
             1. 先完整阅读 daily-research/CLAUDE.md，按上面的任务ID找到主题、平台侧重与特殊要求。
-            2. 采集数据，按优先级：
+            2. 读取 daily-research/briefs/${{ inputs.task_id }}/ 下**最近 1–2 期**已有简报，记下其中条目，
+               本期**不要重复**报道同一事件/同一链接。
+            3. 采集数据，按优先级：
                (a) 优先使用 last30days skill（位于 .claude/skills/last30days）调研目标平台；
                (b) 若该 skill 不存在或运行报错，则运行
-                   `python3 daily-research/scripts/aggregate.py --task ${{ inputs.task_id }} --out /tmp/items.json`
+                   `python3 daily-research/scripts/aggregate.py --task ${{ inputs.task_id }} --days 3 --out /tmp/items.json`
                    并读取 /tmp/items.json 的 candidates 作为候选。
-            3. 按真实互动热度排序，过滤低质/无关/重复内容（规则见 CLAUDE.md）。本期跳过 X/Twitter。
-            4. 选出最多 ${{ inputs.max_items }} 条，用中文撰写简报，严格按 CLAUDE.md 的格式，
+            4. **强制时效优先**：只保留最近 1–3 天的新内容，剔除更早的旧热门；同等价值下越新越优先。
+               再按真实互动热度排序，过滤低质/无关/重复内容（规则见 CLAUDE.md）。本期跳过 X/Twitter。
+            5. 选出最多 ${{ inputs.max_items }} 条，用中文撰写简报，严格按 CLAUDE.md 的格式，
                写入文件：${{ steps.meta.outputs.brief_path }}
-            5. 只写这个文件，不要 commit、不要开 PR、不要修改其他文件。
-            6. 链接必须真实可点击，绝不可编造链接或数据；某平台无优质结果就注明「本期无高质量结果」。
+            6. 只写这个文件，不要 commit、不要开 PR、不要修改其他文件。
+            7. 链接必须真实可点击，绝不可编造链接或数据；某平台无优质结果就注明「本期无高质量结果」。
           claude_args: |
             --max-turns 40
             --allowedTools Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch

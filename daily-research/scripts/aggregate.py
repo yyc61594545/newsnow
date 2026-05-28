@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Self-contained multi-platform aggregator (fallback engine).
+"""Self-contained multi-platform aggregator (fallback engine), recency-first.
 
-Pulls candidate items from Reddit, Hacker News, Polymarket and YouTube,
-ranks them by real engagement, de-duplicates, and writes a JSON list of
-candidates for the LLM step to filter and summarize.
+Pulls candidates from Reddit, Hacker News, Polymarket and YouTube, restricted
+to the last few days, ranks them by recency-aware engagement, de-duplicates,
+and writes a JSON list for the LLM step to filter and summarize.
 
-This is the fallback used when the last30days skill is unavailable. It only
-needs `requests` (and optionally the `yt-dlp` binary for YouTube). No API
-keys are required for any of the four platforms.
+Goal: fresh, same-window content that changes day to day -- not evergreen
+all-time-popular items. No API keys are required for any of the four platforms
+(Reddit is rate-limited/blocked from datacenter IPs without OAuth).
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 try:
     import requests
@@ -28,11 +28,7 @@ except ImportError:  # pragma: no cover
 
 UA = "daily-research-bot/1.0 (github actions; +https://github.com)"
 TIMEOUT = 20
-THIRTY_DAYS = 30 * 86400
 
-# --- Per-task research configuration -------------------------------------
-# The human-readable themes live in daily-research/CLAUDE.md; these are the
-# concrete queries the deterministic fallback uses.
 TOPICS = {
     "ai-tools": {
         "title": "AI工具与变现",
@@ -105,7 +101,7 @@ def norm_title(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (t or "").lower()).strip()
 
 
-def make_item(platform, title, url, score, metric, source="", text=""):
+def make_item(platform, title, url, score, metric, source="", text="", created=None):
     return {
         "platform": platform,
         "title": (title or "").strip(),
@@ -114,72 +110,79 @@ def make_item(platform, title, url, score, metric, source="", text=""):
         "metric": metric,
         "source": source,
         "text": (text or "")[:600],
+        "created": created,  # epoch seconds, or None if unknown
     }
 
 
-# --- Platform fetchers ----------------------------------------------------
-def fetch_reddit(cfg) -> list[dict]:
+# --- Platform fetchers (all scoped to the last `days` days) ---------------
+def fetch_reddit(cfg, days) -> list[dict]:
     items: list[dict] = []
+    cutoff = time.time() - days * 86400
+    tf = "day" if days <= 1 else "week"
     for sub in cfg.get("reddit_subs", []):
         try:
             data = get_json(f"https://www.reddit.com/r/{sub}/top.json",
-                            params={"t": "week", "limit": 20})
+                            params={"t": tf, "limit": 20})
             for c in data.get("data", {}).get("children", []):
                 d = c.get("data", {})
                 ups, ncom = d.get("ups", 0), d.get("num_comments", 0)
                 items.append(make_item(
                     "Reddit", d.get("title", ""),
                     "https://www.reddit.com" + d.get("permalink", ""),
-                    ups + ncom * 2, f"{ups}赞 · {ncom}评论",
-                    source=f"r/{d.get('subreddit', sub)}", text=d.get("selftext", "")))
+                    ups + ncom * 2, f"{ups}赞·{ncom}评论",
+                    source=f"r/{d.get('subreddit', sub)}", text=d.get("selftext", ""),
+                    created=d.get("created_utc")))
             time.sleep(0.5)
         except Exception as e:
             log(f"reddit sub r/{sub} failed: {e}")
     for q in cfg.get("queries", []):
         try:
             data = get_json("https://www.reddit.com/search.json",
-                            params={"q": q, "sort": "top", "t": "month", "limit": 12})
+                            params={"q": q, "sort": "top", "t": tf, "limit": 12})
             for c in data.get("data", {}).get("children", []):
                 d = c.get("data", {})
                 ups, ncom = d.get("ups", 0), d.get("num_comments", 0)
                 items.append(make_item(
                     "Reddit", d.get("title", ""),
                     "https://www.reddit.com" + d.get("permalink", ""),
-                    ups + ncom * 2, f"{ups}赞 · {ncom}评论",
-                    source=f"r/{d.get('subreddit', '')}", text=d.get("selftext", "")))
+                    ups + ncom * 2, f"{ups}赞·{ncom}评论",
+                    source=f"r/{d.get('subreddit', '')}", text=d.get("selftext", ""),
+                    created=d.get("created_utc")))
             time.sleep(0.5)
         except Exception as e:
             log(f"reddit search '{q}' failed: {e}")
+    _ = cutoff
     return items
 
 
-def fetch_hackernews(cfg) -> list[dict]:
+def fetch_hackernews(cfg, days) -> list[dict]:
     items: list[dict] = []
-    cutoff = int(time.time()) - THIRTY_DAYS
+    cutoff = int(time.time()) - days * 86400
     for q in cfg.get("queries", []):
         try:
-            data = get_json("https://hn.algolia.com/api/v1/search",
+            # search_by_date = recency-ordered; we re-rank by points below
+            data = get_json("https://hn.algolia.com/api/v1/search_by_date",
                             params={"query": q, "tags": "story",
                                     "numericFilters": f"created_at_i>{cutoff}",
-                                    "hitsPerPage": 15})
+                                    "hitsPerPage": 20})
             for h in data.get("hits", []):
                 pts, ncom = h.get("points") or 0, h.get("num_comments") or 0
                 url = h.get("url") or f"https://news.ycombinator.com/item?id={h.get('objectID')}"
                 items.append(make_item(
                     "Hacker News", h.get("title") or h.get("story_title", ""),
-                    url, pts + ncom, f"{pts}分 · {ncom}评论", source="news.ycombinator.com"))
+                    url, pts + ncom, f"{pts}分·{ncom}评论", source="news.ycombinator.com",
+                    created=h.get("created_at_i")))
         except Exception as e:
             log(f"hn search '{q}' failed: {e}")
     return items
 
 
-def fetch_polymarket(cfg) -> list[dict]:
+def fetch_polymarket(cfg, days) -> list[dict]:
     items: list[dict] = []
     kws = [k.lower() for k in cfg.get("polymarket_queries", [])]
     try:
         events = get_json("https://gamma-api.polymarket.com/events",
-                          params={"closed": "false", "active": "true",
-                                  "order": "volume", "ascending": "false", "limit": 80})
+                          params={"closed": "false", "active": "true", "limit": 120})
     except Exception as e:
         log(f"polymarket events failed: {e}")
         return items
@@ -187,11 +190,20 @@ def fetch_polymarket(cfg) -> list[dict]:
         title = ev.get("title", "")
         if kws and not any(k in title.lower() for k in kws):
             continue
-        vol = ev.get("volume") or 0
-        try:
-            vol = float(vol)
-        except (TypeError, ValueError):
-            vol = 0.0
+
+        def fnum(*keys):
+            for k in keys:
+                v = ev.get(k)
+                if v is not None:
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        pass
+            return 0.0
+
+        vol24 = fnum("volume24hr", "volume_24hr", "volume24Hr")
+        vol = fnum("volume", "volumeNum")
+        score = vol24 if vol24 else vol  # rank by *recent* activity
         odds = ""
         markets = ev.get("markets") or []
         if markets:
@@ -203,29 +215,41 @@ def fetch_polymarket(cfg) -> list[dict]:
                     prices = None
             if prices:
                 try:
-                    odds = f"赔率 {round(float(prices[0]) * 100)}%"
+                    odds = f"赔率{round(float(prices[0]) * 100)}%"
                 except (TypeError, ValueError, IndexError):
                     odds = ""
         slug = ev.get("slug", "")
+        vol_disp = f"24h成交{_human(vol24)}" if vol24 else f"成交{_human(vol)}"
         items.append(make_item(
             "Polymarket", title,
             f"https://polymarket.com/event/{slug}" if slug else "https://polymarket.com",
-            vol, f"成交量 ${int(vol):,}" + (f" · {odds}" if odds else ""),
+            score, vol_disp + (f"·{odds}" if odds else ""),
             source="polymarket.com"))
+    _ = days
     return items
 
 
-def fetch_youtube(cfg) -> list[dict]:
+def _human(n: float) -> str:
+    n = float(n or 0)
+    if n >= 1e8:
+        return f"{n / 1e8:.1f}亿"
+    if n >= 1e4:
+        return f"{n / 1e4:.0f}万"
+    return f"{int(n)}"
+
+
+def fetch_youtube(cfg, days) -> list[dict]:
     items: list[dict] = []
     if not shutil.which("yt-dlp"):
         log("yt-dlp not installed; skipping YouTube")
         return items
+    dateafter = (datetime.now(timezone.utc) - timedelta(days=days + 1)).strftime("%Y%m%d")
     for q in cfg.get("yt_queries", []):
         try:
             out = subprocess.run(
-                ["yt-dlp", f"ytsearch8:{q}", "--flat-playlist",
-                 "--dump-json", "--no-warnings"],
-                capture_output=True, text=True, timeout=150)
+                ["yt-dlp", f"ytsearch12:{q}", "--dump-json", "--no-warnings",
+                 "--dateafter", dateafter, "--ignore-errors"],
+                capture_output=True, text=True, timeout=240)
             for line in out.stdout.splitlines():
                 line = line.strip()
                 if not line:
@@ -236,13 +260,21 @@ def fetch_youtube(cfg) -> list[dict]:
                     continue
                 vc = v.get("view_count") or 0
                 vid = v.get("id", "")
-                url = v.get("url") or (f"https://www.youtube.com/watch?v={vid}" if vid else "")
+                url = v.get("webpage_url") or (f"https://www.youtube.com/watch?v={vid}" if vid else "")
                 if not url:
                     continue
+                created = None
+                ud = v.get("upload_date")  # YYYYMMDD
+                if ud:
+                    try:
+                        created = datetime.strptime(ud, "%Y%m%d").replace(
+                            tzinfo=timezone.utc).timestamp()
+                    except ValueError:
+                        created = None
                 items.append(make_item(
                     "YouTube", v.get("title", ""), url, vc,
-                    f"{int(vc):,}观看" if vc else "播放量未知",
-                    source=v.get("channel") or v.get("uploader", "")))
+                    f"{_human(vc)}观看" if vc else "新发布",
+                    source=v.get("channel") or v.get("uploader", ""), created=created))
         except Exception as e:
             log(f"youtube search '{q}' failed: {e}")
     return items
@@ -256,9 +288,11 @@ FETCHERS = {
 }
 
 
-def dedupe_and_rank(items: list[dict]) -> list[dict]:
-    seen_url, seen_title, out = set(), set(), []
-    # rank within platform first (percentile), so cross-platform compare is fair
+def dedupe_and_rank(items: list[dict], days: int) -> list[dict]:
+    cutoff = time.time() - days * 86400
+    # drop anything we KNOW is older than the window (unknown-date items kept)
+    items = [it for it in items if it.get("created") is None or it["created"] >= cutoff]
+
     by_platform: dict[str, list[dict]] = {}
     for it in items:
         by_platform.setdefault(it["platform"], []).append(it)
@@ -267,11 +301,13 @@ def dedupe_and_rank(items: list[dict]) -> list[dict]:
         n = len(plist)
         for i, it in enumerate(plist):
             it["rank_pct"] = round(1 - i / n, 3) if n > 1 else 1.0
+
+    seen_url, seen_title, out = set(), set(), []
     for it in sorted(items, key=lambda x: x.get("rank_pct", 0), reverse=True):
-        u = (it["url"] or "").rstrip("/")
-        nt = norm_title(it["title"])
         if not it["title"] or not it["url"]:
             continue
+        u = (it["url"] or "").rstrip("/")
+        nt = norm_title(it["title"])
         if u in seen_url or (nt and nt in seen_title):
             continue
         seen_url.add(u)
@@ -285,6 +321,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True, choices=list(TOPICS.keys()))
     ap.add_argument("--out", default="-")
+    ap.add_argument("--days", type=int, default=3, help="recency window in days")
     ap.add_argument("--limit", type=int, default=40)
     args = ap.parse_args()
 
@@ -294,15 +331,16 @@ def main() -> int:
         fetcher = FETCHERS.get(platform)
         if not fetcher:
             continue
-        log(f"fetching {platform} ...")
-        got = fetcher(cfg)
+        log(f"fetching {platform} (last {args.days}d) ...")
+        got = fetcher(cfg, args.days)
         log(f"  {platform}: {len(got)} raw items")
         all_items.extend(got)
 
-    ranked = dedupe_and_rank(all_items)[: args.limit]
+    ranked = dedupe_and_rank(all_items, args.days)[: args.limit]
     payload = {
         "task": args.task,
         "title": cfg["title"],
+        "window_days": args.days,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(ranked),
         "candidates": ranked,
