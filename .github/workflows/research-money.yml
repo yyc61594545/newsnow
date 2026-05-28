@@ -1,0 +1,17 @@
+name: 研究·搞钱与撸毛
+
+# 每天 08:05 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "5 0 * * *"   # 00:05 UTC = 08:05 北京时间，每天
+
+jobs:
+  run:
+    uses: ./.github/workflows/research.yml
+    with:
+      task_id: money
+      title: 搞钱与撸毛
+      platforms: "Reddit, Polymarket, YouTube"
+      max_items: 12
+    secrets: inherit

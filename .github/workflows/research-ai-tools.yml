@@ -1,0 +1,17 @@
+name: 研究·AI工具与变现
+
+# 每天 08:00 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 0 * * *"   # 00:00 UTC = 08:00 北京时间，每天
+
+jobs:
+  run:
+    uses: ./.github/workflows/research.yml
+    with:
+      task_id: ai-tools
+      title: AI工具与变现
+      platforms: "Reddit, Hacker News, YouTube"
+      max_items: 12
+    secrets: inherit

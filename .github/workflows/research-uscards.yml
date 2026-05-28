@@ -1,0 +1,17 @@
+name: 研究·美卡
+
+# 每隔一天 08:10 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "10 0 */2 * *"   # 00:10 UTC = 08:10 北京时间，每隔一天（按月内日期，月末可能连跑）
+
+jobs:
+  run:
+    uses: ./.github/workflows/research.yml
+    with:
+      task_id: uscards
+      title: 美卡
+      platforms: "Reddit, YouTube"
+      max_items: 12
+    secrets: inherit
