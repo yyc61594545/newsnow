@@ -3,8 +3,8 @@ name: 研究·外贸获客
 # 每周一 09:10 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "10 1 * * 1"   # 01:10 UTC 周一 = 09:10 北京时间 周一
+  schedule:
+    - cron: "10 1 * * 1"   # 01:10 UTC 周一 = 09:10 北京时间 周一
 
 jobs:
   run:
