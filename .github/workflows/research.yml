@@ -109,47 +109,64 @@ jobs:
           fi
           echo "Brief ready: $BRIEF ($(wc -l < "$BRIEF") lines)"
 
-      - name: Send to Telegram (curl, chunked)
+      - name: Send to Telegram (curl, chunked, HTML)
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           set -euo pipefail
           BRIEF="${{ steps.meta.outputs.brief_path }}"
+          # render the markdown brief into clean Telegram HTML (bold clickable titles)
+          python3 daily-research/scripts/md_to_telegram.py "$BRIEF" > /tmp/tg_message.txt
           rm -f /tmp/chunk_*
-          # split into <=3900-char chunks on line boundaries
+          # split into <=3500-char chunks on line boundaries (each HTML tag stays on one line)
           awk '
             BEGIN { n=0; buf="" }
             {
-              if (length(buf) + length($0) + 1 > 3900 && length(buf) > 0) {
+              if (length(buf) + length($0) + 1 > 3500 && length(buf) > 0) {
                 printf "%s", buf > sprintf("/tmp/chunk_%03d", n); n++; buf=""
               }
               buf = buf $0 "\n"
             }
             END { if (length(buf) > 0) printf "%s", buf > sprintf("/tmp/chunk_%03d", n) }
-          ' "$BRIEF"
-          for f in $(ls /tmp/chunk_* | sort); do
-            code=$(curl -sS -o /tmp/tg_resp.json -w "%{http_code}" \
+          ' /tmp/tg_message.txt
+          send() {
+            curl -sS -o /tmp/tg_resp.json -w "%{http_code}" \
               -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text@${f}" \
-              --data-urlencode "disable_web_page_preview=true")
-            echo "Telegram chunk $(basename "$f") -> HTTP $code"
+              --data-urlencode "parse_mode=$2" \
+              --data-urlencode "disable_web_page_preview=true" \
+              --data-urlencode "text@$1"
+          }
+          for f in $(ls /tmp/chunk_* | sort); do
+            code=$(send "$f" "HTML")
             if [ "$code" != "200" ]; then
-              echo "::error::Telegram send failed"; cat /tmp/tg_resp.json; exit 1
+              echo "HTML send failed ($code), retrying chunk as plain text"; cat /tmp/tg_resp.json || true
+              sed 's/<[^>]*>//g' "$f" > "${f}.plain"
+              code=$(send "${f}.plain" "")
+            fi
+            echo "Telegram $(basename "$f") -> HTTP $code"
+            if [ "$code" != "200" ]; then
+              echo "::error::Telegram send failed"; cat /tmp/tg_resp.json || true; exit 1
             fi
             sleep 1
           done
 
       - name: Commit brief
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "daily-research-bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # claude-code-action can leave the persisted credential unusable for push;
+          # set an explicit token-authenticated remote so push reliably succeeds.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add "${{ steps.meta.outputs.brief_path }}"
           if git diff --cached --quiet; then
             echo "No brief changes to commit."
           else
             git commit -m "brief: ${{ inputs.title }} ${{ steps.meta.outputs.date }}"
-            git push || (git pull --rebase --autostash && git push)
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
