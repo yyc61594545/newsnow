@@ -13,15 +13,25 @@ jobs:
           python-version: "3.12"
       - run: pip install --quiet requests yt-dlp
 
-      - name: yt-dlp raw probe (stderr visible)
+      - name: probe A - node as JS runtime
         continue-on-error: true
         run: |
-          yt-dlp --version
-          echo "--- date-sorted search URL ---"
+          node --version
           yt-dlp "https://www.youtube.com/results?search_query=Claude+Code+tips&sp=CAISBAgCEAE%3D" \
-            --dump-json --playlist-end 3 --ignore-errors 2>&1 | head -40
-          echo "--- plain ytsearch ---"
-          yt-dlp "ytsearch2:Claude Code tips" --dump-json --ignore-errors 2>&1 | head -20
+            --js-runtimes node --dump-json --playlist-end 3 --ignore-errors 2>&1 \
+            | grep -oE '"(id|title|upload_date)": "[^"]*"|ERROR.*|WARNING.*' | head -20
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: probe B - deno as JS runtime
+        continue-on-error: true
+        run: |
+          deno --version | head -1
+          yt-dlp "https://www.youtube.com/results?search_query=Claude+Code+tips&sp=CAISBAgCEAE%3D" \
+            --dump-json --playlist-end 3 --ignore-errors 2>&1 \
+            | grep -oE '"(id|title|upload_date)": "[^"]*"|ERROR.*|WARNING.*' | head -20
 
       - name: aggregate probe
         continue-on-error: true
