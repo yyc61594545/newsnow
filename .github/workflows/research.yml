@@ -105,7 +105,7 @@ jobs:
             6. 只写这个文件，不要 commit、不要开 PR、不要修改其他文件。
             7. 链接必须真实可点击，绝不可编造链接或数据；某平台无优质结果就注明「本期无高质量结果」。
           claude_args: |
-            --max-turns 40
+            --max-turns 60
             --allowedTools Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch
 
       - name: Verify brief was produced
