@@ -283,18 +283,23 @@ def fetch_youtube(cfg, days) -> list[dict]:
     if not shutil.which("yt-dlp"):
         log("yt-dlp not installed; skipping YouTube")
         return items
-    dateafter = (datetime.now(timezone.utc) - timedelta(days=days + 1)).strftime("%Y%m%d")
     for q in cfg.get("yt_queries", []):
-        # ytsearch* ranks by relevance and returns evergreen hits, which
-        # --dateafter then filters down to nothing. Use the search URL with
-        # sp=CAISBAgCEAE%3D (past week, sorted by upload date) instead.
+        # ytsearch* ranks by relevance and returns evergreen hits, so the
+        # recency filter used to empty the whole list. Search by upload date
+        # instead (sp=CAISBAgCEAE%3D = past week, sorted by date).
+        #
+        # --flat-playlist reads only the search page. Fetching each video's
+        # detail page triggers YouTube's "Sign in to confirm you're not a
+        # bot" check from datacenter IPs (i.e. every GitHub runner), which is
+        # what silently zeroed this source in CI. Flat entries carry title,
+        # view_count and channel but no upload_date -- recency comes from the
+        # search filter above, and dedupe_and_rank keeps created=None items.
         search_url = ("https://www.youtube.com/results?search_query="
                       + quote_plus(q) + "&sp=CAISBAgCEAE%3D")
         try:
             out = subprocess.run(
                 ["yt-dlp", search_url, "--dump-json", "--no-warnings",
-                 "--playlist-end", "12",
-                 "--dateafter", dateafter, "--ignore-errors"],
+                 "--flat-playlist", "--playlist-end", "12", "--ignore-errors"],
                 capture_output=True, text=True, timeout=240)
             for line in out.stdout.splitlines():
                 line = line.strip()
@@ -319,7 +324,7 @@ def fetch_youtube(cfg, days) -> list[dict]:
                         created = None
                 items.append(make_item(
                     "YouTube", v.get("title", ""), url, vc,
-                    f"{_human(vc)}观看" if vc else "新发布",
+                    f"{_human(vc)}观看 · 近7天内发布" if vc else "近7天内发布",
                     source=v.get("channel") or v.get("uploader", ""), created=created))
         except Exception as e:
             log(f"youtube search '{q}' failed: {e}")
