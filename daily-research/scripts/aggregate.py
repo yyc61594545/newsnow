@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus
 
 try:
     import requests
@@ -284,9 +285,15 @@ def fetch_youtube(cfg, days) -> list[dict]:
         return items
     dateafter = (datetime.now(timezone.utc) - timedelta(days=days + 1)).strftime("%Y%m%d")
     for q in cfg.get("yt_queries", []):
+        # ytsearch* ranks by relevance and returns evergreen hits, which
+        # --dateafter then filters down to nothing. Use the search URL with
+        # sp=CAISBAgCEAE%3D (past week, sorted by upload date) instead.
+        search_url = ("https://www.youtube.com/results?search_query="
+                      + quote_plus(q) + "&sp=CAISBAgCEAE%3D")
         try:
             out = subprocess.run(
-                ["yt-dlp", f"ytsearch12:{q}", "--dump-json", "--no-warnings",
+                ["yt-dlp", search_url, "--dump-json", "--no-warnings",
+                 "--playlist-end", "12",
                  "--dateafter", dateafter, "--ignore-errors"],
                 capture_output=True, text=True, timeout=240)
             for line in out.stdout.splitlines():

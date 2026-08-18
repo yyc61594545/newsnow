@@ -31,6 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai
+      # Reddit blocks unauthenticated .json endpoints outright (403 Blocked,
+      # from any IP), so aggregate.py needs app-only OAuth creds. Optional:
+      # when unset the fetcher just returns no Reddit items.
+      REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+      REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
