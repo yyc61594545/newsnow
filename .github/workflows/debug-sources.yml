@@ -1,0 +1,21 @@
+name: debug sources (temporary)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: reddit rss from runner IP
+        continue-on-error: true
+        run: |
+          for u in "https://www.reddit.com/r/ClaudeAI/top.rss?t=day" \
+                   "https://www.reddit.com/r/churning/top.rss?t=week"; do
+            echo "--- $u"
+            curl -sS -o /tmp/r.xml -w "HTTP %{http_code}  %{size_download}B\n" \
+              -A "daily-research/1.0 (+https://github.com/yyc61594545/newsnow)" \
+              --max-time 20 "$u" || true
+            grep -c "<entry" /tmp/r.xml || echo "0 entries"
+            sleep 5
+          done
