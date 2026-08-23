@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 
 try:
@@ -30,6 +31,13 @@ except ImportError:  # pragma: no cover
 
 UA = "daily-research-bot/1.0 (github actions; +https://github.com)"
 TIMEOUT = 20
+# Reddit RSS is the no-credentials fallback. It rate-limits hard -- one
+# request per sub gets 429s and burns minutes -- so subs are fetched in
+# combined r/a+b+c feeds, a few per request, spaced out. The whole sweep is
+# capped so one task cannot stall the workflow.
+RSS_GROUP = 4
+RSS_DELAY = 9
+RSS_BUDGET = 120
 
 TOPICS = {
     "ai-tools": {
@@ -151,6 +159,91 @@ def reddit_token() -> str:
     return _REDDIT_TOKEN
 
 
+def _reddit_rss_get(url: str, params: dict) -> str | None:
+    """GET an Atom feed, backing off once on 429. None if it stays blocked."""
+    for attempt in (1, 2):
+        try:
+            r = requests.get(url, params=params, headers={"User-Agent": UA},
+                             timeout=TIMEOUT)
+            if r.status_code == 429:
+                if attempt == 1:
+                    time.sleep(RSS_DELAY * 3)
+                    continue
+                log(f"reddit rss: still 429 after backoff: {url}")
+                return None
+            r.raise_for_status()
+            return r.text
+        except Exception as e:
+            log(f"reddit rss failed: {url}: {e}")
+            return None
+    return None
+
+
+def _parse_reddit_atom(xml: str, group: str) -> list[dict]:
+    """Atom entries carry no score or comment count. The feed is already
+    sorted by top, so position stands in for engagement -- good enough to
+    rank within Reddit, which is all dedupe_and_rank needs.
+    """
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    try:
+        entries = ET.fromstring(xml).findall("a:entry", ns)
+    except ET.ParseError as e:
+        log(f"reddit rss: unparsable feed for r/{group}: {e}")
+        return []
+    out = []
+    total = len(entries)
+    for i, e in enumerate(entries):
+        link = e.find("a:link", ns)
+        url = link.get("href") if link is not None else ""
+        if not url:
+            continue
+        created = None
+        pub = e.findtext("a:published", default="", namespaces=ns)
+        if pub:
+            try:
+                created = datetime.fromisoformat(pub).timestamp()
+            except ValueError:
+                created = None
+        cat = e.find("a:category", ns)
+        sub = (cat.get("label") or cat.get("term")) if cat is not None else ""
+        sub = sub.removeprefix("r/") or group
+        out.append(make_item(
+            "Reddit", e.findtext("a:title", default="", namespaces=ns), url,
+            total - i, f"r/{sub} 热门第{i + 1}",
+            source=f"r/{sub}",
+            text=e.findtext("a:content", default="", namespaces=ns),
+            created=created))
+    return out
+
+
+def fetch_reddit_rss(cfg, days) -> list[dict]:
+    """Fallback used when no OAuth creds are configured: /*.json is 403 for
+    everyone now, but the Atom feeds still answer, including from GitHub
+    runner IPs.
+    """
+    items: list[dict] = []
+    tf = "day" if days <= 1 else "week"
+    subs = cfg.get("reddit_subs", [])
+    groups = ["+".join(subs[i:i + RSS_GROUP]) for i in range(0, len(subs), RSS_GROUP)]
+    deadline = time.time() + RSS_BUDGET
+    done, skipped = 0, []
+    for i, group in enumerate(groups):
+        if time.time() > deadline:
+            skipped.append(group)
+            continue
+        if i:
+            time.sleep(RSS_DELAY)
+        xml = _reddit_rss_get(f"https://www.reddit.com/r/{group}/top.rss", {"t": tf})
+        if xml:
+            items.extend(_parse_reddit_atom(xml, group))
+            done += 1
+    if skipped:
+        log(f"reddit rss: {RSS_BUDGET}s budget spent, skipped group(s): "
+            f"{', '.join(skipped)}")
+    log(f"reddit rss: {len(items)} items from {done}/{len(groups)} group(s)")
+    return items
+
+
 def fetch_reddit(cfg, days) -> list[dict]:
     items: list[dict] = []
     tf = "day" if days <= 1 else "week"
@@ -160,9 +253,8 @@ def fetch_reddit(cfg, days) -> list[dict]:
         ua = os.environ.get("REDDIT_USER_AGENT", "daily-research:v1.0 (by /u/daily-research-bot)")
         headers = {"Authorization": f"bearer {tok}", "User-Agent": ua}
     else:
-        base, suffix = "https://www.reddit.com", ".json"
-        headers = None
-        log("reddit: no OAuth creds; falling back to public endpoints (likely 403 on cloud IPs)")
+        log("reddit: no OAuth creds; using RSS fallback (no scores, slower)")
+        return fetch_reddit_rss(cfg, days)
 
     def collect(children):
         for c in children:
