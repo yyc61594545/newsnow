@@ -33,9 +33,10 @@ UA = "daily-research-bot/1.0 (github actions; +https://github.com)"
 TIMEOUT = 20
 # Reddit RSS is the no-credentials fallback. It rate-limits hard -- one
 # request per sub gets 429s and burns minutes -- so subs are fetched in
-# combined r/a+b+c feeds, a few per request, spaced out. The whole sweep is
-# capped so one task cannot stall the workflow.
-RSS_GROUP = 4
+# combined r/a+b feeds, spaced out. Groups stay small because a feed returns
+# only ~25 entries in total, so a busy sub crowds out the quiet ones sharing
+# its request. The whole sweep is capped so one task cannot stall the run.
+RSS_GROUP = 2
 RSS_DELAY = 9
 RSS_BUDGET = 120
 
