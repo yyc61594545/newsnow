@@ -1,10 +1,14 @@
 name: 研究·外贸获客
 
-# 每周一 09:10 (Asia/Shanghai)。验证通过前仅手动触发；启用定时请取消下方注释。
+# 定时已停用 (2026-08-31)：配的三个源供不上 B2B 外贸内容，每次都退回 WebSearch
+# 满世界找行业站，稳定烧 77-80 轮、超出 60 轮上限被判失败，简报写完即丢弃，
+# 每次白花约 $2.7。要恢复：取消下方 schedule 注释，并把 max_turns 提到 100
+# 以上（见 research.yml），或改用以 WebSearch 为主的 platforms 配置。
+# 手动触发仍然可用。
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "10 1 * * 1"   # 01:10 UTC 周一 = 09:10 北京时间 周一
+  # schedule:
+  #   - cron: "10 1 * * 1"   # 01:10 UTC 周一 = 09:10 北京时间 周一
 
 jobs:
   run:
